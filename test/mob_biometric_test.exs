@@ -51,7 +51,7 @@ defmodule MobBiometricTest do
     test "iOS declares LocalAuthentication + the NSFaceIDUsageDescription plist key",
          %{manifest: m} do
       assert "LocalAuthentication" in m.ios.frameworks
-      assert is_binary(m.ios.plist_keys["NSFaceIDUsageDescription"])
+      assert m.ios.plist_keys["NSFaceIDUsageDescription"] =~ ~r/\S/
     end
 
     test "every native source dir + Kotlin bridge the manifest references exists",
@@ -65,10 +65,14 @@ defmodule MobBiometricTest do
   end
 
   describe "NIF stub agreement" do
+    # Guards the .erl stub / manifest, not app code — VacuousTest can't see that.
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
     test "the manifest NIF module is the shipped .erl stub and loads on the host" do
       assert Code.ensure_loaded?(:mob_biometric_nif)
     end
 
+    # Guards the .erl stub / manifest, not app code — VacuousTest can't see that.
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
     test "every NIF the public API calls is exported by the stub at the right arity" do
       exports = :mob_biometric_nif.module_info(:exports)
 
@@ -77,6 +81,8 @@ defmodule MobBiometricTest do
       end
     end
 
+    # Guards the .erl stub / manifest, not app code — VacuousTest can't see that.
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
     test "host (no native linked) falls back to nif_not_loaded, not a load crash" do
       assert_raise ErlangError, ~r/nif_not_loaded/, fn ->
         :mob_biometric_nif.biometric_authenticate("Authenticate")
