@@ -4,6 +4,12 @@
   plugin_spec_version: 1,
   description:
     "Biometric authentication (Face ID / Touch ID / fingerprint) — extracted from mob core in Wave 2",
+  # A sample screen the host can navigate to by route (auto-listed by a home
+  # that enumerates Mob.Plugins.screens/0). Pure-Elixir + hot-pushable; drop it
+  # and this entry in a real app that builds its own UI.
+  screens: [
+    %{module: MobBiometric.DemoScreen, default_route: "/mob_biometric/demo"}
+  ],
   nifs: [
     # iOS: Objective-C NIF driving LAContext evaluatePolicy
     # (deviceOwnerAuthenticationWithBiometrics). lang: :objc -> compiled as
