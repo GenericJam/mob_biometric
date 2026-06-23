@@ -101,4 +101,28 @@ defmodule MobBiometricTest do
       end
     end
   end
+
+  describe "Android bridge: platform BiometricPrompt (ComponentActivity-safe)" do
+    # Regression guard for the ComponentActivity fix. The Kotlin bridge isn't
+    # exercised by `mix test` (native), so assert its source contract instead:
+    # it must use the platform android.hardware.biometrics API. androidx's
+    # BiometricPrompt requires a FragmentActivity, but mob's MainActivity is a
+    # ComponentActivity, so the old `as? FragmentActivity` cast always returned
+    # null and delivered :not_available regardless of enrollment.
+    setup do
+      %{src: File.read!(Path.join(@plugin_dir, "priv/native/android/MobBiometricBridge.kt"))}
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "imports the platform android.hardware.biometrics, not androidx.biometric", %{src: src} do
+      assert src =~ "import android.hardware.biometrics.BiometricPrompt"
+      refute src =~ "import androidx.biometric"
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "uses the platform Builder, with no androidx FragmentActivity dependency", %{src: src} do
+      assert src =~ "BiometricPrompt.Builder("
+      refute src =~ "androidx.fragment"
+    end
+  end
 end

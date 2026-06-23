@@ -1,34 +1,27 @@
-// mob_biometric plugin — Android bridge (androidx.biometric BiometricPrompt).
+// mob_biometric plugin — Android bridge (platform android.hardware.biometrics).
 //
-// Extracted from mob-core's MobBridge.biometric_authenticate (mob_new template
-// MobBridge.kt.eex lines 681-712). Lives in the plugin's own package; mob_dev
-// copies it into the app Kotlin sourceSet and MobPluginBootstrap.registerAll()
-// calls register() at startup and hands it the Activity (MobActivityAware).
-// No MobPermissionProvider: biometric auth has no runtime permission dialog —
-// it uses the device's existing enrollment.
+// Uses the PLATFORM BiometricPrompt (android.hardware.biometrics, API 28+),
+// which is built from a Context and works with mob's ComponentActivity host.
+// The previous androidx.biometric BiometricPrompt requires a FragmentActivity;
+// mob's MainActivity is a ComponentActivity (Compose host), so the androidx path
+// always failed its `as? FragmentActivity` cast and delivered :not_available
+// regardless of enrollment. minSdk is 28, so the platform API covers the whole
+// supported range — no FingerprintManager fallback needed. This mirrors how the
+// camera bridge adapts to the ComponentActivity host instead of forcing a
+// FragmentActivity.
 //
 // The native thunks (nativeRegister + nativeDeliverBiometric) are exported
-// directly from the sibling zig NIF mob_biometric_nif.zig.
-//
-// ACTIVITY-TYPE FINDING (copied verbatim from the template): androidx.biometric
-// 1.1.0's BiometricPrompt constructor requires a FragmentActivity, but mob's
-// MainActivity is a ComponentActivity (Compose host — MainActivity.kt.eex:31).
-// The template makes this COMPILE with the safe cast
-// `activityRef?.get() as? FragmentActivity`; at RUNTIME on a mob host the cast
-// returns null and we deliver {:biometric, :not_available}. That is core's
-// current (degraded) Android behavior and is preserved verbatim here. Making
-// the prompt actually show on Android needs either androidx.biometric 1.2.x's
-// ComponentActivity-friendly API or a FragmentActivity host — a follow-up,
-// not part of this extraction.
+// directly from the sibling zig NIF mob_biometric_nif.zig. MobPluginBootstrap
+// .registerAll() calls register() at startup and hands it the Activity
+// (MobActivityAware). No MobPermissionProvider: biometric auth has no runtime
+// permission dialog — it uses the device's existing enrollment.
 package io.mob.biometric
 
 import android.app.Activity
-import androidx.biometric.BiometricManager
-import androidx.biometric.BiometricPrompt
-import androidx.core.content.ContextCompat
-import androidx.fragment.app.FragmentActivity
+import android.hardware.biometrics.BiometricPrompt
+import android.os.CancellationSignal
 import java.lang.ref.WeakReference
-import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
 
 object MobBiometricBridge : io.mob.plugin.MobActivityAware {
     private var activityRef: WeakReference<Activity>? = null
@@ -49,34 +42,52 @@ object MobBiometricBridge : io.mob.plugin.MobActivityAware {
 
     @JvmStatic
     fun biometric_authenticate(pid: Long, reason: String) {
-        // VERBATIM from core (template MobBridge.kt.eex:684) — see the
-        // activity-type finding in the header comment.
-        val activity = activityRef?.get() as? FragmentActivity ?: run {
+        val activity = activityRef?.get() ?: run {
             nativeDeliverBiometric(pid, "not_available"); return
         }
-        val mgr = BiometricManager.from(activity)
-        if (mgr.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK)
-                != BiometricManager.BIOMETRIC_SUCCESS) {
-            nativeDeliverBiometric(pid, "not_available"); return
-        }
-        val executor: Executor = ContextCompat.getMainExecutor(activity)
-        val prompt = BiometricPrompt(activity, executor, object : BiometricPrompt.AuthenticationCallback() {
-            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                nativeDeliverBiometric(pid, "success")
-            }
-            override fun onAuthenticationFailed() {
-                nativeDeliverBiometric(pid, "failure")
-            }
-            override fun onAuthenticationError(code: Int, msg: CharSequence) {
-                nativeDeliverBiometric(pid, if (code == BiometricPrompt.ERROR_CANCELED ||
-                    code == BiometricPrompt.ERROR_USER_CANCELED) "failure" else "not_available")
-            }
-        })
+
+        // Build + show on the UI thread; results arrive on the main executor.
         activity.runOnUiThread {
-            prompt.authenticate(BiometricPrompt.PromptInfo.Builder()
-                .setTitle("Authenticate").setSubtitle(reason)
-                .setNegativeButtonText("Cancel")
-                .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_WEAK).build())
+            val executor = activity.mainExecutor
+
+            // Exactly one terminal result reaches the BEAM, whichever fires first
+            // (success, an error, or the Cancel button).
+            val done = AtomicBoolean(false)
+            fun deliver(result: String) {
+                if (done.compareAndSet(false, true)) nativeDeliverBiometric(pid, result)
+            }
+
+            val callback = object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    deliver("success")
+                }
+
+                // onAuthenticationFailed is NON-terminal (a biometric was read but
+                // not matched; the prompt stays up to retry) — don't deliver here.
+
+                override fun onAuthenticationError(code: Int, msg: CharSequence) {
+                    // User-dismissed -> :failure. No hardware / none enrolled /
+                    // unavailable / lockout -> :not_available (no pre-check needed;
+                    // the platform reports it here). The Cancel button is also
+                    // handled by the negative-button listener below.
+                    val outcome = when (code) {
+                        BiometricPrompt.BIOMETRIC_ERROR_USER_CANCELED,
+                        BiometricPrompt.BIOMETRIC_ERROR_CANCELED -> "failure"
+                        else -> "not_available"
+                    }
+                    deliver(outcome)
+                }
+            }
+
+            val prompt = BiometricPrompt.Builder(activity)
+                .setTitle("Authenticate")
+                .setSubtitle(reason)
+                // A negative button (or an allowed device-credential authenticator)
+                // is mandatory or build() throws.
+                .setNegativeButton("Cancel", executor) { _, _ -> deliver("failure") }
+                .build()
+
+            prompt.authenticate(CancellationSignal(), executor, callback)
         }
     }
 }
