@@ -6,6 +6,30 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.1.3] - 2026-06-23
+
+### Fixed
+- **Android biometric prompt now actually shows on a mob host.**
+  `MobBiometric.authenticate` always delivered `{:biometric, :not_available}`
+  on Android regardless of enrollment, because the bridge used
+  androidx.biometric's `BiometricPrompt`, whose constructor requires a
+  `FragmentActivity`; mob's `MainActivity` is a `ComponentActivity`, so the
+  `as? FragmentActivity` cast always returned `null`. The bridge now uses the
+  **platform** `android.hardware.biometrics.BiometricPrompt` (API 28+), built
+  from a `Context`, so it works with the ComponentActivity host (mirrors the
+  camera bridge). Cancel/user-dismiss maps to `:failure`, no-hardware /
+  none-enrolled / lockout to `:not_available`; `onAuthenticationFailed` is
+  non-terminal; a one-shot guard delivers exactly one terminal result.
+  Device-verified on a Moto G power 5G (2024). (#1)
+
+### Notes
+- `androidx.biometric:biometric:1.1.0` stays in `gradle_deps` only for the
+  `USE_BIOMETRIC` / `USE_FINGERPRINT` permissions its manifest contributes; the
+  bridge no longer uses the library. A follow-up may declare the permission in
+  the plugin manifest and drop the AAR (needs a device re-verify).
+
+---
+
 ## [0.1.2] - 2026-06-16
 
 ### Changed

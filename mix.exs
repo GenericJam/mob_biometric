@@ -6,7 +6,7 @@ defmodule MobBiometric.MixProject do
   def project do
     [
       app: :mob_biometric,
-      version: "0.1.2",
+      version: "0.1.3",
       elixir: "~> 1.17",
       deps: deps(),
       aliases: aliases(),
