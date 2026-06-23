@@ -21,11 +21,12 @@ defmodule MobBiometric do
   Face ID additionally requires `NSFaceIDUsageDescription` in Info.plist —
   merged from this plugin's manifest at build time.
 
-  Android: `BiometricPrompt` (androidx.biometric). NOTE: androidx.biometric
-  1.1.0's `BiometricPrompt` requires a `FragmentActivity` host; mob's
-  MainActivity is a `ComponentActivity`, so on today's hosts the bridge's
-  safe cast fails and `:not_available` is delivered (verbatim parity with
-  core's current behavior — see MobBiometricBridge.kt).
+  Android: the platform `android.hardware.biometrics.BiometricPrompt` (API 28+),
+  built from a `Context` so it works with mob's `ComponentActivity` host. (An
+  earlier version used androidx.biometric's `BiometricPrompt`, which requires a
+  `FragmentActivity`; mob's MainActivity is a `ComponentActivity`, so that cast
+  always failed and `:not_available` was delivered regardless of enrollment. The
+  platform API needs no FragmentActivity — see MobBiometricBridge.kt.)
   """
 
   @spec authenticate(Mob.Socket.t(), keyword()) :: Mob.Socket.t()

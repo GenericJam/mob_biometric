@@ -16,8 +16,9 @@
     # ObjC (-fobjc-arc); platform: :ios so it isn't pulled into the Android
     # build.
     %{module: :mob_biometric_nif, native_dir: "priv/native/ios", lang: :objc, platform: :ios},
-    # Android: zig NIF bridging to androidx.biometric BiometricPrompt via the
-    # Kotlin MobBiometricBridge. platform: :android so the iOS build skips it.
+    # Android: zig NIF bridging to the platform android.hardware.biometrics
+    # BiometricPrompt via the Kotlin MobBiometricBridge (Context-based, so it
+    # works on mob's ComponentActivity host). platform: :android so iOS skips it.
     %{module: :mob_biometric_nif, native_dir: "priv/native/jni", lang: :zig, platform: :android}
   ],
   # NO permissions capability entry: biometric auth shows no runtime
@@ -27,12 +28,13 @@
   android: %{
     bridge_kt: "priv/native/android/MobBiometricBridge.kt",
     bridge_class: "io.mob.biometric.MobBiometricBridge",
-    # No manifest permission needed from the host: the mob_new template
-    # AndroidManifest.xml.eex declares no USE_BIOMETRIC today — the
-    # androidx.biometric AAR's own manifest declares USE_BIOMETRIC /
-    # USE_FINGERPRINT and Gradle manifest-merges them into the app.
+    # No manifest permission needed from the host: the androidx.biometric AAR's
+    # own manifest declares USE_BIOMETRIC / USE_FINGERPRINT and Gradle
+    # manifest-merges them into the app. The bridge itself no longer uses the
+    # androidx library (it moved to the platform BiometricPrompt), so the AAR is
+    # retained ONLY for this permission contribution — a follow-up could declare
+    # USE_BIOMETRIC here directly and drop the dep (needs a device re-verify).
     permissions: [],
-    # Found in the template's app/build.gradle.eex:126 — moves here.
     gradle_deps: ["androidx.biometric:biometric:1.1.0"]
   },
   ios: %{
