@@ -24,6 +24,26 @@ static void bio_send2(const ErlNifPid *pid, const char *a1, const char *a2) {
 
 // ── Biometric authentication ──────────────────────────────────────────────
 // Delivers {:biometric, :success | :failure | :not_available} to the caller.
+//
+// Outcome mapping is aligned with the Android bridge (platform BiometricPrompt,
+// mob_biometric 0.1.3): only an explicit user/system/app cancellation is
+// :failure; every other non-success (lockout, repeated mismatch, not
+// available / not enrolled, passcode not set, …) is :not_available — matching
+// Android's onAuthenticationError, where USER_CANCELED/CANCELED -> :failure and
+// everything else -> :not_available.
+static const char *bio_outcome_for_error(NSInteger code) {
+  switch (code) {
+    case LAErrorUserCancel:
+    case LAErrorSystemCancel:
+    case LAErrorAppCancel:
+      return "failure";
+    default:
+      // LAErrorBiometryLockout / LAErrorAuthenticationFailed /
+      // LAErrorBiometryNotAvailable / LAErrorBiometryNotEnrolled /
+      // LAErrorPasscodeNotSet / LAErrorUserFallback / … -> not available.
+      return "not_available";
+  }
+}
 
 static ERL_NIF_TERM nif_biometric_authenticate(ErlNifEnv *env, int argc,
                                                const ERL_NIF_TERM argv[]) {
@@ -44,7 +64,8 @@ static ERL_NIF_TERM nif_biometric_authenticate(ErlNifEnv *env, int argc,
           [ctx evaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics
               localizedReason:reason
                         reply:^(BOOL ok, NSError *e) {
-                          bio_send2(&pid, "biometric", ok ? "success" : "failure");
+                          bio_send2(&pid, "biometric",
+                                    ok ? "success" : bio_outcome_for_error(e.code));
                         }];
       } else {
           bio_send2(&pid, "biometric", "not_available");

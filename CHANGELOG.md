@@ -6,6 +6,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [0.1.4] - 2026-06-24
+
+### Changed
+- **iOS outcome mapping aligned with Android.** The iOS NIF now inspects the
+  `LAError` code from `evaluatePolicy` instead of mapping every non-success to
+  `:failure`: an explicit user/system/app cancellation stays `:failure`, but
+  lockout, repeated mismatch, not-available / not-enrolled, and passcode-not-set
+  now map to `:not_available` — matching the Android bridge's error-code mapping
+  (`USER_CANCELED`/`CANCELED` → `:failure`, else → `:not_available`). Outcomes
+  are now identical across platforms. (Source-contract tested; the `.m` runtime
+  paths are not exercised by `mix test`.)
+
+---
+
 ## [0.1.3] - 2026-06-23
 
 ### Fixed

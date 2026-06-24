@@ -125,4 +125,33 @@ defmodule MobBiometricTest do
       refute src =~ "androidx.fragment"
     end
   end
+
+  describe "iOS bridge: LAError outcome mapping aligned with Android" do
+    # The iOS NIF (LAContext) and the Android bridge must agree on outcomes:
+    # cancel -> :failure, everything else (lockout etc.) -> :not_available. The
+    # .m isn't exercised by `mix test`, so assert its source contract.
+    setup do
+      %{src: File.read!(Path.join(@plugin_dir, "priv/native/ios/mob_biometric_nif.m"))}
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "maps the LAError cancel codes to :failure", %{src: src} do
+      for code <- ["LAErrorUserCancel", "LAErrorSystemCancel", "LAErrorAppCancel"] do
+        assert src =~ code, "expected the .m to map #{code}"
+      end
+
+      assert src =~ ~s(return "failure")
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "routes the error code through bio_outcome_for_error, defaulting to :not_available",
+         %{src: src} do
+      # Replaces the old blanket `ok ? "success" : "failure"` (which made lockout
+      # a :failure); the default branch of bio_outcome_for_error is
+      # :not_available, matching Android's lockout -> :not_available.
+      assert src =~ "bio_outcome_for_error(e.code)"
+      assert src =~ ~s(return "not_available")
+      refute src =~ ~s(ok ? "success" : "failure")
+    end
+  end
 end

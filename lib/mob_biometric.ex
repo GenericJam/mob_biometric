@@ -21,6 +21,11 @@ defmodule MobBiometric do
   Face ID additionally requires `NSFaceIDUsageDescription` in Info.plist —
   merged from this plugin's manifest at build time.
 
+  Outcomes are consistent across platforms: a successful match is `:success`;
+  an explicit user/system cancellation is `:failure`; and anything else (no
+  hardware, none enrolled, lockout, repeated mismatch) is `:not_available` — on
+  iOS via the `LAError` code, on Android via the `BiometricPrompt` error code.
+
   Android: the platform `android.hardware.biometrics.BiometricPrompt` (API 28+),
   built from a `Context` so it works with mob's `ComponentActivity` host. (An
   earlier version used androidx.biometric's `BiometricPrompt`, which requires a
