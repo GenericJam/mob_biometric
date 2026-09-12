@@ -35,15 +35,17 @@ def handle_info({:biometric, :not_available}, socket), do: ...
 `:not_available` means the device has no biometric hardware or the user has
 not enrolled any biometrics.
 
-## Limits
+## Platforms
 
-- **Android currently always delivers `:not_available` on mob hosts.**
-  androidx.biometric 1.1.0's `BiometricPrompt` requires a `FragmentActivity`
-  host; mob's MainActivity is a `ComponentActivity`, so the bridge's safe
-  cast fails. This is verbatim parity with mob core's behavior before
-  extraction; a fix is tracked.
-- iOS works: `LAContext` with `deviceOwnerAuthenticationWithBiometrics`
-  (Touch ID and Face ID).
+- **Android** works on mob's `ComponentActivity` host via the platform
+  `android.hardware.biometrics.BiometricPrompt` (API 28+), which is built
+  from a `Context` and does not require a `FragmentActivity`. Fixed in
+  0.1.3; device-verified on Moto G power 5G (2024). Cancel / user-dismiss
+  → `:failure`; no-hardware, none-enrolled, or lockout → `:not_available`.
+- **iOS** uses `LAContext` with `deviceOwnerAuthenticationWithBiometrics`
+  (Touch ID and Face ID). Explicit user/system/app cancellation → `:failure`;
+  lockout, repeated mismatch, not-available, not-enrolled, and
+  passcode-not-set → `:not_available` (aligned with Android in 0.1.4).
 
 ## Development
 
