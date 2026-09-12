@@ -6,6 +6,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
+## [Unreleased]
+
+### Docs
+- **README `## Limits` section retired** (MOB-60). Claimed Android always
+  delivered `:not_available`; that was fixed in 0.1.3 (platform
+  `BiometricPrompt` on `ComponentActivity`) and 0.1.4 (iOS outcome mapping
+  aligned with Android). Renamed to `## Platforms` and updated to describe
+  the current per-platform behaviour and outcome mapping.
+
+---
+
 ## [0.1.4] - 2026-06-24
 
 ### Changed
