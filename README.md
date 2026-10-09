@@ -33,7 +33,14 @@ def handle_info({:biometric, :not_available}, socket), do: ...
 ```
 
 `:not_available` means the device has no biometric hardware or the user has
-not enrolled any biometrics.
+not enrolled any biometrics (or another non-cancel failure, e.g. lockout).
+
+To check without a prompt, `MobBiometric.availability/0` answers
+`:available | :not_enrolled | :no_hardware | :unavailable | :locked_out |
+:passcode_not_set` synchronously.
+
+`mix mob.selftest` (mob_dev 0.7.17+) runs `MobBiometric.SelfTest` on the
+device: one read-only `biometric_availability/0` NIF call, no prompt.
 
 ## Platforms
 

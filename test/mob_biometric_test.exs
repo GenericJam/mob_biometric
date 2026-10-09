@@ -1,6 +1,7 @@
 defmodule MobBiometricTest do
   use ExUnit.Case, async: true
 
+  alias MobBiometric.SelfTest
   alias MobDev.Plugin.{Manifest, Validator}
 
   @plugin_dir Path.expand("..", __DIR__)
@@ -64,6 +65,93 @@ defmodule MobBiometricTest do
 
       assert File.exists?(Path.join(@plugin_dir, m.android.bridge_kt))
     end
+
+    test "declares the self-test, which passes the validator without a warning", %{manifest: m} do
+      assert m.selftest == MobBiometric.SelfTest
+      assert %{errors: [], warnings: warnings} = Validator.validate_plugin(m, @plugin_dir)
+      refute Enum.any?(warnings, &(&1 =~ "selftest"))
+    end
+  end
+
+  describe "MobBiometric.SelfTest" do
+    test "on a host with no native library linked it fails, naming the NIF, instead of raising" do
+      assert {:fail, reason} = result = SelfTest.run(%{platform: :ios, device: :simulator})
+      assert reason =~ "mob_biometric_nif is not linked"
+      assert reason =~ "nif_not_loaded"
+      assert Mob.Plugin.SelfTest.result?(result)
+    end
+
+    test "an available sensor passes" do
+      assert SelfTest.classify(:available) == :pass
+      assert Mob.Plugin.SelfTest.result?(:pass)
+    end
+
+    test "no sensor is a hardware skip" do
+      assert SelfTest.classify(:no_hardware) == {:skip, :needs_hardware}
+      assert Mob.Plugin.SelfTest.result?({:skip, :needs_hardware})
+    end
+
+    test "a sensor the device's state keeps unusable is a skip with a reason, not a pass" do
+      for {answer, words} <- [
+            not_enrolled: "nothing is enrolled",
+            unavailable: "unavailable right now",
+            locked_out: "locked out",
+            passcode_not_set: "passcode"
+          ] do
+        assert {:skip, reason} = result = SelfTest.classify(answer)
+        assert is_binary(reason) and reason =~ words, "#{answer}: #{inspect(result)}"
+        assert Mob.Plugin.SelfTest.result?(result)
+      end
+    end
+
+    test "a bridge the host never wired up fails" do
+      assert {:fail, "Kotlin MobBiometricBridge not registered" <> _} =
+               result = SelfTest.classify({:error, :bridge_not_registered})
+
+      assert Mob.Plugin.SelfTest.result?(result)
+
+      assert {:fail, "MobBiometricBridge has no Activity" <> _} =
+               result = SelfTest.classify({:error, :no_activity})
+
+      assert Mob.Plugin.SelfTest.result?(result)
+
+      for {reason, words} <- [
+            missing_permission: "USE_BIOMETRIC",
+            java_exception: "threw",
+            missing_face_id_usage_description: "NSFaceIDUsageDescription"
+          ] do
+        assert {:fail, msg} = result = SelfTest.classify({:error, reason})
+        assert msg =~ words
+        assert Mob.Plugin.SelfTest.result?(result)
+      end
+    end
+
+    test "an unexpected answer fails, quoting it" do
+      for answer <- [:ok, {:error, 9}, {:error, {:la_error, -1004}}, true] do
+        assert {:fail, reason} = result = SelfTest.classify(answer)
+        assert reason =~ "biometric_availability/0 returned #{inspect(answer)}"
+        assert Mob.Plugin.SelfTest.result?(result)
+      end
+    end
+
+    test "every answer the Android NIF can build is classified: bare atoms never fail, errors always do" do
+      zig_src = File.read!(Path.join(@plugin_dir, "priv/native/jni/mob_biometric_nif.zig"))
+
+      answers =
+        for [_, kind, name] <-
+              Regex.scan(~r/\d(?:, \d)* => (erts\.atom|errorTuple)\(env, "(\w+)"\)/, zig_src) do
+          if kind == "errorTuple", do: {:error, String.to_atom(name)}, else: String.to_atom(name)
+        end
+
+      assert :available in answers and {:error, :java_exception} in answers
+
+      for answer <- answers do
+        result = SelfTest.classify(answer)
+        assert Mob.Plugin.SelfTest.result?(result)
+        failed? = match?({:fail, _}, result)
+        assert failed? == match?({:error, _}, answer), "#{inspect(answer)} -> #{inspect(result)}"
+      end
+    end
   end
 
   describe "NIF stub agreement" do
@@ -78,7 +166,7 @@ defmodule MobBiometricTest do
     test "every NIF the public API calls is exported by the stub at the right arity" do
       exports = :mob_biometric_nif.module_info(:exports)
 
-      for fa <- [biometric_authenticate: 1] do
+      for fa <- [biometric_authenticate: 1, biometric_availability: 0] do
         assert fa in exports, "#{inspect(fa)} missing from mob_biometric_nif exports"
       end
     end
@@ -90,13 +178,81 @@ defmodule MobBiometricTest do
         :mob_biometric_nif.biometric_authenticate("Authenticate")
       end
     end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "both native NIF tables and the Kotlin bridge export biometric_availability/0" do
+      m_src = File.read!(Path.join(@plugin_dir, "priv/native/ios/mob_biometric_nif.m"))
+      zig_src = File.read!(Path.join(@plugin_dir, "priv/native/jni/mob_biometric_nif.zig"))
+      kt_src = File.read!(Path.join(@plugin_dir, "priv/native/android/MobBiometricBridge.kt"))
+
+      assert m_src =~
+               ~s({"biometric_availability", 0, nif_biometric_availability, ERL_NIF_DIRTY_JOB_IO_BOUND})
+
+      assert zig_src =~ ~s(.name = "biometric_availability", .arity = 0)
+      # The zig lookup's "()I" signature must match a static Kotlin method
+      # returning a primitive Int (Int? would be Ljava/lang/Integer;).
+      assert zig_src =~ ~s|"biometric_availability", "()I"|
+      assert kt_src =~ ~r/@JvmStatic\s+fun biometric_availability\(\): Int \{/
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "the Kotlin AVAIL_* codes and the zig switch agree, and 0 never means available" do
+      zig_src = File.read!(Path.join(@plugin_dir, "priv/native/jni/mob_biometric_nif.zig"))
+      kt_src = File.read!(Path.join(@plugin_dir, "priv/native/android/MobBiometricBridge.kt"))
+
+      kt_codes =
+        for [_, name, n] <- Regex.scan(~r/const val AVAIL_(\w+) = (\d+)/, kt_src),
+            into: %{},
+            do: {String.downcase(name), String.to_integer(n)}
+
+      assert map_size(kt_codes) == 8
+      refute 0 in Map.values(kt_codes)
+
+      zig_arms =
+        for [_, ns, name] <-
+              Regex.scan(~r/(\d(?:, \d)*) => \w+(?:\.atom)?\(env, "(\w+)"\)/, zig_src),
+            n <- String.split(ns, ", "),
+            into: %{},
+            do: {String.to_integer(n), name}
+
+      for {name, n} <- kt_codes do
+        assert zig_arms[n] == name,
+               "AVAIL_#{String.upcase(name)} = #{n}, zig maps it to #{inspect(zig_arms[n])}"
+      end
+
+      assert zig_arms[0] == "java_exception"
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "integration faults in the native availability paths surface as errors, not device states" do
+      # These paths only run on a device; pin that they report an error (which
+      # the self-test fails) instead of collapsing into a skip-able state.
+      zig_src = File.read!(Path.join(@plugin_dir, "priv/native/jni/mob_biometric_nif.zig"))
+      kt_src = File.read!(Path.join(@plugin_dir, "priv/native/android/MobBiometricBridge.kt"))
+      m_src = File.read!(Path.join(@plugin_dir, "priv/native/ios/mob_biometric_nif.m"))
+
+      # zig: a pending Java exception is checked before the int is trusted.
+      assert zig_src =~
+               ~r/CallStaticIntMethod.*\n\s*const threw = takePendingException\(jenv\);\n.*\n.*\n\s*if \(threw\) return errorTuple\(env, "java_exception"\);/
+
+      # Kotlin: SecurityException -> MISSING_PERMISSION, unknown canAuthenticate
+      # status -> UNEXPECTED_STATUS (both error codes), never UNAVAILABLE.
+      assert kt_src =~ ~r/catch \(e: SecurityException\) \{\n.*\n\s*AVAIL_MISSING_PERMISSION/
+      assert kt_src =~ ~r/else -> \{\n.*unexpected status.*\n\s*AVAIL_UNEXPECTED_STATUS/
+
+      # iOS: an unknown LAError code or a foreign error domain is an error.
+      assert m_src =~ "default: answer = BIO_LA_ERROR;"
+
+      assert m_src =~
+               ~r/!\[err\.domain isEqualToString:LAErrorDomain\]\) \{\n\s*answer = BIO_LA_ERROR;/
+    end
   end
 
   describe "public API surface (extraction parity with old Mob.Biometric)" do
     test "exports the full extracted surface" do
       exports = MobBiometric.__info__(:functions)
 
-      for fa <- [authenticate: 2] do
+      for fa <- [authenticate: 2, availability: 0] do
         assert fa in exports, "#{inspect(fa)} missing from MobBiometric"
       end
     end

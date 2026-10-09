@@ -7,7 +7,7 @@
 %% device. On a host dev build neither is linked, so on_load tolerates the
 %% failure and the NIFs fall back to nif_error until the native merge links one.
 -module(mob_biometric_nif).
--export([biometric_authenticate/1]).
+-export([biometric_authenticate/1, biometric_availability/0]).
 -on_load(init/0).
 
 init() ->
@@ -17,4 +17,7 @@ init() ->
     end.
 
 biometric_authenticate(_Reason) ->
+    erlang:nif_error(nif_not_loaded).
+
+biometric_availability() ->
     erlang:nif_error(nif_not_loaded).
