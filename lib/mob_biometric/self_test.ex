@@ -86,6 +86,11 @@ defmodule MobBiometric.SelfTest do
   def classify({:error, :missing_face_id_usage_description}),
     do: {:fail, "Info.plist lacks NSFaceIDUsageDescription on a Face ID device"}
 
+  def classify({:error, :unexpected_status}),
+    do:
+      {:fail,
+       "BiometricManager.canAuthenticate returned a status the bridge doesn't know (see logcat tag MobBiometric)"}
+
   def classify(other),
     do:
       {:fail,

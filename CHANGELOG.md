@@ -19,9 +19,10 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `canAuthenticate()` (API 29), `FingerprintManager` (API 28); runs on a
   dirty IO scheduler. A miswired host answers `{:error, reason}` instead:
   Android `:bridge_not_registered`, `:no_activity`, `:missing_permission`,
-  `:java_exception`; iOS `:missing_face_id_usage_description` (Face ID
-  device, key absent from Info.plist) or `{:la_error, code}` for an
-  unexpected `LAError`. A Java exception can never read as `:available`.
+  `:java_exception`, `:unexpected_status`, `:no_jni_env`; iOS
+  `:missing_face_id_usage_description` (Face ID device, key absent from
+  Info.plist) or `{:la_error, code}` for an unexpected `LAError`. A Java
+  exception can never read as `:available`.
 - **On-device self-test** (MOB-418). `MobBiometric.SelfTest` implements
   `Mob.Plugin.SelfTest` and is declared in the manifest as `selftest:`. It
   calls `biometric_availability/0` (never `authenticate`, which needs a

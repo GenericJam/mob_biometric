@@ -93,12 +93,14 @@ fn takePendingException(jenv: *jni.JNIEnv) bool {
 /// Deliver {:biometric, :not_available} to the caller when the request never
 /// reached the bridge, so authenticate/2's caller still gets its one answer
 /// (the iOS NIF and the Kotlin no-Activity path do the same).
-fn sendNotAvailable(pid: erts.ErlNifPid) void {
+/// `caller_env` is the running NIF's env (enif_send's contract on a scheduler
+/// thread; NULL is only for threads ERTS didn't create).
+fn sendNotAvailable(caller_env: ?*erts.ErlNifEnv, pid: erts.ErlNifPid) void {
     var to = pid;
     const msg_env = erts.enif_alloc_env() orelse return;
     defer erts.enif_free_env(msg_env);
     const msg = erts.makeTuple(msg_env, .{ erts.atom(msg_env, "biometric"), erts.atom(msg_env, "not_available") });
-    _ = erts.enif_send(null, &to, msg_env, msg);
+    _ = erts.enif_send(caller_env, &to, msg_env, msg);
 }
 
 /// Call `MobBiometricBridge.<method>(pid_long, arg)` — async; the result lands
@@ -108,12 +110,12 @@ fn sendNotAvailable(pid: erts.ErlNifPid) void {
 /// ignores the return value).
 fn callBridgePidStr(env: ?*erts.ErlNifEnv, method: jni.JMethodID, pid: erts.ErlNifPid, arg: ?[*:0]const u8) erts.ERL_NIF_TERM {
     if (g_bio_cls == null or method == null) {
-        sendNotAvailable(pid);
+        sendNotAvailable(env, pid);
         return bridgeNotRegistered(env);
     }
     var attached: c_int = 0;
     const jenv = get_jenv(&attached) orelse {
-        sendNotAvailable(pid);
+        sendNotAvailable(env, pid);
         return errorTuple(env, "no_jni_env");
     };
     const jarg: jni.JString = if (arg) |a| jni.newStringUTF(jenv, a) else null;
@@ -124,7 +126,7 @@ fn callBridgePidStr(env: ?*erts.ErlNifEnv, method: jni.JMethodID, pid: erts.ErlN
     if (threw) {
         // The bridge threw before handing off to the UI thread: nothing will
         // ever deliver, so answer for it.
-        sendNotAvailable(pid);
+        sendNotAvailable(env, pid);
         return errorTuple(env, "java_exception");
     }
     return erts.ok(env);
