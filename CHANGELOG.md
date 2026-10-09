@@ -6,7 +6,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ---
 
-## [Unreleased]
+## [0.2.0] - 2026-10-09
 
 ### Added
 - **`MobBiometric.availability/0`** (MOB-418), a read-only capability query
@@ -29,8 +29,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   finger or a face): `:available` passes, `:no_hardware` is
   `{:skip, :needs_hardware}`, other device states (not enrolled, lockout,
   …) skip with a reason, every `{:error, _}` and an unlinked NIF fail. Run
-  it with `mix mob.selftest` from a host app (mob_dev 0.7.17). Requires mob
-  0.9.15; `mob_version` in the manifest is now `~> 0.9`.
+  it with `mix mob.selftest` from a host app (mob_dev 0.7.17+).
+
+### Changed
+- **Requires mob >= 0.9.15** (for `Mob.Plugin.SelfTest`): the `:mob`
+  dependency is now `~> 0.9 and >= 0.9.15` (was `~> 0.7`) and the manifest's
+  `mob_version` is `~> 0.9` (was `~> 0.6`).
 
 ### Fixed
 - **Android: `authenticate/2` with an unregistered bridge** no longer calls
@@ -39,8 +43,6 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   of nothing. A failed method-ID lookup in `nativeRegister` no longer leaves a
   pending `NoSuchMethodError`, and a Java exception from the bridge call is
   cleared instead of left pending on the scheduler thread.
-
----
 
 ## [0.1.5] - 2026-09-30
 
