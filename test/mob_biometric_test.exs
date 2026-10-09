@@ -205,7 +205,7 @@ defmodule MobBiometricTest do
             into: %{},
             do: {String.downcase(name), String.to_integer(n)}
 
-      assert map_size(kt_codes) == 7
+      assert map_size(kt_codes) == 8
       refute 0 in Map.values(kt_codes)
 
       zig_arms =
@@ -221,6 +221,30 @@ defmodule MobBiometricTest do
       end
 
       assert zig_arms[0] == "java_exception"
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "integration faults in the native availability paths surface as errors, not device states" do
+      # These paths only run on a device; pin that they report an error (which
+      # the self-test fails) instead of collapsing into a skip-able state.
+      zig_src = File.read!(Path.join(@plugin_dir, "priv/native/jni/mob_biometric_nif.zig"))
+      kt_src = File.read!(Path.join(@plugin_dir, "priv/native/android/MobBiometricBridge.kt"))
+      m_src = File.read!(Path.join(@plugin_dir, "priv/native/ios/mob_biometric_nif.m"))
+
+      # zig: a pending Java exception is checked before the int is trusted.
+      assert zig_src =~
+               ~r/CallStaticIntMethod.*\n\s*const threw = takePendingException\(jenv\);\n.*\n.*\n\s*if \(threw\) return errorTuple\(env, "java_exception"\);/
+
+      # Kotlin: SecurityException -> MISSING_PERMISSION, unknown canAuthenticate
+      # status -> UNEXPECTED_STATUS (both error codes), never UNAVAILABLE.
+      assert kt_src =~ ~r/catch \(e: SecurityException\) \{\n.*\n\s*AVAIL_MISSING_PERMISSION/
+      assert kt_src =~ ~r/else -> \{\n.*unexpected status.*\n\s*AVAIL_UNEXPECTED_STATUS/
+
+      # iOS: an unknown LAError code or a foreign error domain is an error.
+      assert m_src =~ "default: answer = BIO_LA_ERROR;"
+
+      assert m_src =~
+               ~r/!\[err\.domain isEqualToString:LAErrorDomain\]\) \{\n\s*answer = BIO_LA_ERROR;/
     end
   end
 

@@ -78,6 +78,18 @@ fn errorTuple(env: ?*erts.ErlNifEnv, comptime reason: [:0]const u8) erts.ERL_NIF
     return erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, reason) });
 }
 
+/// True (and the exception cleared) if the last JNI call threw. mob's JNIEnv
+/// struct types ExceptionOccurred as an opaque slot (it doesn't declare the
+/// later ExceptionCheck slot), so cast it to its jni.h signature.
+fn takePendingException(jenv: *jni.JNIEnv) bool {
+    const occurred: *const fn (*jni.JNIEnv) callconv(.c) jni.JObject = @ptrCast(@alignCast(jenv.*.ExceptionOccurred.?));
+    const thrown = occurred(jenv);
+    if (thrown == null) return false;
+    jni.exceptionClear(jenv);
+    jni.deleteLocalRef(jenv, thrown);
+    return true;
+}
+
 /// Deliver {:biometric, :not_available} to the caller when the request never
 /// reached the bridge, so authenticate/2's caller still gets its one answer
 /// (the iOS NIF and the Kotlin no-Activity path do the same).
@@ -106,10 +118,15 @@ fn callBridgePidStr(env: ?*erts.ErlNifEnv, method: jni.JMethodID, pid: erts.ErlN
     };
     const jarg: jni.JString = if (arg) |a| jni.newStringUTF(jenv, a) else null;
     jenv.*.CallStaticVoidMethod.?(jenv, g_bio_cls, method, pidToJlong(pid), jarg);
-    // Never leave a Java exception pending on this thread (a no-op if none).
-    jni.exceptionClear(jenv);
+    const threw = takePendingException(jenv);
     if (jarg != null) jni.deleteLocalRef(jenv, jarg);
     detachIfAttached(attached);
+    if (threw) {
+        // The bridge threw before handing off to the UI thread: nothing will
+        // ever deliver, so answer for it.
+        sendNotAvailable(pid);
+        return errorTuple(env, "java_exception");
+    }
     return erts.ok(env);
 }
 
@@ -166,10 +183,12 @@ fn nif_biometric_authenticate(
 // (MobBiometricBridge.biometric_availability, AVAIL_* constants) to an atom:
 //   1 -> available, 2 -> not_enrolled, 3 -> no_hardware, 4 -> unavailable,
 //   5 -> {:error, :no_activity}, 6 -> {:error, :missing_permission},
-//   7 -> {:error, :java_exception} (Kotlin caught it).
-// 0 is never returned by the bridge: it is what ART yields when the method
-// throws past the bridge's catch, so it maps to {:error, :java_exception}, never
-// to :available. Bridge never registered (or either method-ID lookup failed) ->
+//   7 -> {:error, :java_exception} (Kotlin caught it),
+//   8 -> {:error, :unexpected_status} (canAuthenticate returned a code the
+//   bridge doesn't know; logged under tag MobBiometric).
+// A throw that escapes the bridge is caught by takePendingException; code 0 is
+// never produced by the bridge and also maps to java_exception, never to
+// :available. Bridge never registered (or either method-ID lookup failed) ->
 // {:error, :bridge_not_registered}; no JNI env -> {:error, :no_jni_env}.
 // Dirty IO: canAuthenticate is a binder call into system_server.
 fn nif_biometric_availability(
@@ -186,8 +205,10 @@ fn nif_biometric_availability(
     var attached: c_int = 0;
     const jenv = get_jenv(&attached) orelse return errorTuple(env, "no_jni_env");
     const code = jenv.*.CallStaticIntMethod.?(jenv, g_bio_cls, g_bio.availability);
-    jni.exceptionClear(jenv);
+    const threw = takePendingException(jenv);
     detachIfAttached(attached);
+    // The return value is undefined when the method threw (JNI spec).
+    if (threw) return errorTuple(env, "java_exception");
     return switch (code) {
         1 => erts.atom(env, "available"),
         2 => erts.atom(env, "not_enrolled"),
@@ -196,6 +217,7 @@ fn nif_biometric_availability(
         5 => errorTuple(env, "no_activity"),
         6 => errorTuple(env, "missing_permission"),
         0, 7 => errorTuple(env, "java_exception"),
+        8 => errorTuple(env, "unexpected_status"),
         else => erts.makeTuple(env, .{ erts.atom(env, "error"), erts.enif_make_int(env, code) }),
     };
 }

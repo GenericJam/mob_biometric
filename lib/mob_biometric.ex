@@ -69,7 +69,8 @@ defmodule MobBiometric do
       handed the bridge an Activity), `:missing_permission` (no
       `USE_BIOMETRIC` / `USE_FINGERPRINT` in the merged manifest),
       `:java_exception` (the bridge threw; logged under tag `MobBiometric`),
-      `:no_jni_env`.
+      `:unexpected_status` (`canAuthenticate` returned a code the bridge
+      doesn't know; also logged), `:no_jni_env`.
     * iOS: `:missing_face_id_usage_description` (a Face ID device whose
       Info.plist lacks the key this plugin's manifest merges) and
       `{:la_error, code}` for an `LAError` code not listed above.

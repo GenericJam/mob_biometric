@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 object MobBiometricBridge : io.mob.plugin.MobActivityAware {
     // biometric_availability() codes; the zig NIF turns each into the atom its
-    // name spells (AVAIL_NOT_ENROLLED -> :not_enrolled; the last three into
+    // name spells (AVAIL_NOT_ENROLLED -> :not_enrolled; the last four into
     // {:error, atom}). 0 is deliberately unused: it is what ART returns from
     // CallStaticIntMethod when the method throws, so an exception that escaped
     // can never read as "available".
@@ -41,6 +41,11 @@ object MobBiometricBridge : io.mob.plugin.MobActivityAware {
     private const val AVAIL_NO_ACTIVITY = 5
     private const val AVAIL_MISSING_PERMISSION = 6
     private const val AVAIL_JAVA_EXCEPTION = 7
+    private const val AVAIL_UNEXPECTED_STATUS = 8
+
+    // BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED (API 31); the
+    // literal keeps an API-28 minSdk build free of InlinedApi lint.
+    private const val SECURITY_UPDATE_REQUIRED = 15
 
     // Written on the main thread (setActivity), read on BEAM scheduler threads.
     @Volatile private var activityRef: WeakReference<Activity>? = null
@@ -97,7 +102,11 @@ object MobBiometricBridge : io.mob.plugin.MobActivityAware {
         BiometricManager.BIOMETRIC_SUCCESS -> AVAIL_AVAILABLE
         BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> AVAIL_NOT_ENROLLED
         BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> AVAIL_NO_HARDWARE
-        else -> AVAIL_UNAVAILABLE
+        BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE, SECURITY_UPDATE_REQUIRED -> AVAIL_UNAVAILABLE
+        else -> {
+            android.util.Log.w("MobBiometric", "canAuthenticate returned unexpected status $code")
+            AVAIL_UNEXPECTED_STATUS
+        }
     }
 
     // API 28 has no BiometricManager; FingerprintManager is the platform's
