@@ -18,12 +18,23 @@
 package io.mob.biometric
 
 import android.app.Activity
+import android.content.pm.PackageManager
+import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricPrompt
+import android.hardware.fingerprint.FingerprintManager
+import android.os.Build
 import android.os.CancellationSignal
 import java.lang.ref.WeakReference
 import java.util.concurrent.atomic.AtomicBoolean
 
 object MobBiometricBridge : io.mob.plugin.MobActivityAware {
+    // biometric_availability() codes; the zig NIF turns them into atoms.
+    private const val AVAIL_AVAILABLE = 0
+    private const val AVAIL_NOT_ENROLLED = 1
+    private const val AVAIL_NO_HARDWARE = 2
+    private const val AVAIL_UNAVAILABLE = 3
+    private const val AVAIL_NO_ACTIVITY = 4
+
     private var activityRef: WeakReference<Activity>? = null
 
     @JvmStatic external fun nativeRegister()
@@ -38,6 +49,56 @@ object MobBiometricBridge : io.mob.plugin.MobActivityAware {
 
     override fun setActivity(activity: Activity) {
         activityRef = WeakReference(activity)
+    }
+
+    // Read-only capability check; never shows UI. 0 available, 1 none enrolled,
+    // 2 no hardware, 3 hardware unavailable (or security update required),
+    // 4 no Activity (the bootstrap never called setActivity).
+    @JvmStatic
+    fun biometric_availability(): Int {
+        val activity = activityRef?.get() ?: return AVAIL_NO_ACTIVITY
+        return try {
+            when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
+                    val bm = activity.getSystemService(BiometricManager::class.java)
+                        ?: return AVAIL_NO_HARDWARE
+                    // BIOMETRIC_WEAK (which includes STRONG) is what the
+                    // platform BiometricPrompt built below accepts by default.
+                    fromCanAuthenticate(bm.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK))
+                }
+                Build.VERSION.SDK_INT == Build.VERSION_CODES.Q -> {
+                    val bm = activity.getSystemService(BiometricManager::class.java)
+                        ?: return AVAIL_NO_HARDWARE
+                    @Suppress("DEPRECATION")
+                    fromCanAuthenticate(bm.canAuthenticate())
+                }
+                else -> fingerprintAvailability(activity)
+            }
+        } catch (e: SecurityException) {
+            AVAIL_UNAVAILABLE
+        }
+    }
+
+    private fun fromCanAuthenticate(code: Int): Int = when (code) {
+        BiometricManager.BIOMETRIC_SUCCESS -> AVAIL_AVAILABLE
+        BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> AVAIL_NOT_ENROLLED
+        BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> AVAIL_NO_HARDWARE
+        else -> AVAIL_UNAVAILABLE
+    }
+
+    // API 28 has no BiometricManager; FingerprintManager is the platform's
+    // only enrollment query there (USE_FINGERPRINT comes from the AAR merge).
+    @Suppress("DEPRECATION")
+    private fun fingerprintAvailability(activity: Activity): Int {
+        if (!activity.packageManager.hasSystemFeature(PackageManager.FEATURE_FINGERPRINT)) {
+            return AVAIL_NO_HARDWARE
+        }
+        val fm = activity.getSystemService(FingerprintManager::class.java) ?: return AVAIL_NO_HARDWARE
+        return when {
+            !fm.isHardwareDetected -> AVAIL_UNAVAILABLE
+            !fm.hasEnrolledFingerprints() -> AVAIL_NOT_ENROLLED
+            else -> AVAIL_AVAILABLE
+        }
     }
 
     @JvmStatic

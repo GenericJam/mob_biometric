@@ -1,9 +1,12 @@
 %{
   name: :mob_biometric,
-  mob_version: "~> 0.6",
+  mob_version: "~> 0.9",
   plugin_spec_version: 1,
   description:
     "Biometric authentication (Face ID / Touch ID / fingerprint) — extracted from mob core in Wave 2",
+  # On-device proof for `mix mob.selftest` / mob_ci: a read-only
+  # biometric_availability/0 NIF round trip, no prompt (see Mob.Plugin.SelfTest).
+  selftest: MobBiometric.SelfTest,
   # A sample screen the host can navigate to by route (auto-listed by a home
   # that enumerates Mob.Plugins.screens/0). Pure-Elixir + hot-pushable; drop it
   # and this entry in a real app that builds its own UI.

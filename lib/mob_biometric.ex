@@ -40,4 +40,39 @@ defmodule MobBiometric do
     :mob_biometric_nif.biometric_authenticate(reason)
     socket
   end
+
+  @typedoc "What `availability/0` reports about the device's biometrics."
+  @type availability ::
+          :available
+          | :not_enrolled
+          | :no_hardware
+          | :unavailable
+          | :locked_out
+          | :passcode_not_set
+
+  @doc """
+  Asks the OS whether biometric authentication can run right now, without
+  showing any UI. Synchronous; nothing is sent to the mailbox.
+
+    * `:available` — a sensor is present and a biometric is enrolled.
+    * `:not_enrolled` — a sensor is present but nothing is enrolled.
+    * `:no_hardware` — the device has no biometric sensor.
+    * `:unavailable` — a sensor exists but can't be used now (Android: hardware
+      busy or a security update is required; iOS: e.g. Face ID denied for the app).
+    * `:locked_out` — iOS only: too many failed attempts.
+    * `:passcode_not_set` — iOS only: biometrics need a device passcode.
+
+  Android may also return `{:error, :bridge_not_registered}` or
+  `{:error, :no_activity}` when the host's plugin bootstrap never registered
+  the Kotlin bridge or never handed it an Activity — host integration bugs.
+
+  iOS: `LAContext.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics)`.
+  Android: `BiometricManager.canAuthenticate(BIOMETRIC_WEAK)` (API 30+),
+  `canAuthenticate()` (API 29), `FingerprintManager` (API 28).
+
+  On a host build with no native library linked this raises `ErlangError`
+  (`nif_not_loaded`).
+  """
+  @spec availability() :: availability() | {:error, atom() | integer()}
+  def availability, do: :mob_biometric_nif.biometric_availability()
 end

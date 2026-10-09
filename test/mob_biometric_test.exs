@@ -1,6 +1,7 @@
 defmodule MobBiometricTest do
   use ExUnit.Case, async: true
 
+  alias MobBiometric.SelfTest
   alias MobDev.Plugin.{Manifest, Validator}
 
   @plugin_dir Path.expand("..", __DIR__)
@@ -64,6 +65,64 @@ defmodule MobBiometricTest do
 
       assert File.exists?(Path.join(@plugin_dir, m.android.bridge_kt))
     end
+
+    test "declares the self-test, which passes the validator without a warning", %{manifest: m} do
+      assert m.selftest == MobBiometric.SelfTest
+      assert %{errors: [], warnings: warnings} = Validator.validate_plugin(m, @plugin_dir)
+      refute Enum.any?(warnings, &(&1 =~ "selftest"))
+    end
+  end
+
+  describe "MobBiometric.SelfTest" do
+    test "on a host with no native library linked it fails, naming the NIF, instead of raising" do
+      assert {:fail, reason} = result = SelfTest.run(%{platform: :ios, device: :simulator})
+      assert reason =~ "mob_biometric_nif is not linked"
+      assert reason =~ "nif_not_loaded"
+      assert Mob.Plugin.SelfTest.result?(result)
+    end
+
+    test "an available sensor passes" do
+      assert SelfTest.classify(:available) == :pass
+      assert Mob.Plugin.SelfTest.result?(:pass)
+    end
+
+    test "no sensor is a hardware skip" do
+      assert SelfTest.classify(:no_hardware) == {:skip, :needs_hardware}
+      assert Mob.Plugin.SelfTest.result?({:skip, :needs_hardware})
+    end
+
+    test "a sensor the device's state keeps unusable is a skip with a reason, not a pass" do
+      for {answer, words} <- [
+            not_enrolled: "nothing is enrolled",
+            unavailable: "unavailable right now",
+            locked_out: "locked out",
+            passcode_not_set: "passcode"
+          ] do
+        assert {:skip, reason} = result = SelfTest.classify(answer)
+        assert is_binary(reason) and reason =~ words, "#{answer}: #{inspect(result)}"
+        assert Mob.Plugin.SelfTest.result?(result)
+      end
+    end
+
+    test "a bridge the host never wired up fails" do
+      assert {:fail, "Kotlin MobBiometricBridge not registered" <> _} =
+               result = SelfTest.classify({:error, :bridge_not_registered})
+
+      assert Mob.Plugin.SelfTest.result?(result)
+
+      assert {:fail, "MobBiometricBridge has no Activity" <> _} =
+               result = SelfTest.classify({:error, :no_activity})
+
+      assert Mob.Plugin.SelfTest.result?(result)
+    end
+
+    test "an unexpected answer fails, quoting it" do
+      for answer <- [:ok, {:error, 7}, true] do
+        assert {:fail, reason} = result = SelfTest.classify(answer)
+        assert reason =~ "biometric_availability/0 returned #{inspect(answer)}"
+        assert Mob.Plugin.SelfTest.result?(result)
+      end
+    end
   end
 
   describe "NIF stub agreement" do
@@ -78,7 +137,7 @@ defmodule MobBiometricTest do
     test "every NIF the public API calls is exported by the stub at the right arity" do
       exports = :mob_biometric_nif.module_info(:exports)
 
-      for fa <- [biometric_authenticate: 1] do
+      for fa <- [biometric_authenticate: 1, biometric_availability: 0] do
         assert fa in exports, "#{inspect(fa)} missing from mob_biometric_nif exports"
       end
     end
@@ -90,13 +149,26 @@ defmodule MobBiometricTest do
         :mob_biometric_nif.biometric_authenticate("Authenticate")
       end
     end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "both native NIF tables and the Kotlin bridge export biometric_availability/0" do
+      m_src = File.read!(Path.join(@plugin_dir, "priv/native/ios/mob_biometric_nif.m"))
+      zig_src = File.read!(Path.join(@plugin_dir, "priv/native/jni/mob_biometric_nif.zig"))
+      kt_src = File.read!(Path.join(@plugin_dir, "priv/native/android/MobBiometricBridge.kt"))
+
+      assert m_src =~ ~s({"biometric_availability", 0, nif_biometric_availability, 0})
+      assert zig_src =~ ~s(.name = "biometric_availability", .arity = 0)
+      # The zig lookup's "()I" signature must match the Kotlin method.
+      assert zig_src =~ ~s|"biometric_availability", "()I"|
+      assert kt_src =~ "fun biometric_availability(): Int"
+    end
   end
 
   describe "public API surface (extraction parity with old Mob.Biometric)" do
     test "exports the full extracted surface" do
       exports = MobBiometric.__info__(:functions)
 
-      for fa <- [authenticate: 2] do
+      for fa <- [authenticate: 2, availability: 0] do
         assert fa in exports, "#{inspect(fa)} missing from MobBiometric"
       end
     end

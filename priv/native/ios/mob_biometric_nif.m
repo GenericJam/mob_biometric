@@ -74,9 +74,42 @@ static ERL_NIF_TERM nif_biometric_authenticate(ErlNifEnv *env, int argc,
     return enif_make_atom(env, "ok");
 }
 
+// ── Biometric availability (read-only, no UI) ─────────────────────────────
+// canEvaluatePolicy never prompts (the Face ID usage prompt only appears on
+// evaluatePolicy). Returns an atom:
+//   available         — canEvaluatePolicy succeeded
+//   not_enrolled      — LAErrorBiometryNotEnrolled
+//   no_hardware       — LAErrorBiometryNotAvailable and biometryType is None
+//   unavailable       — LAErrorBiometryNotAvailable with a sensor (e.g. the
+//                       user denied this app Face ID), or any other error
+//   locked_out        — LAErrorBiometryLockout
+//   passcode_not_set  — LAErrorPasscodeNotSet
+// biometryType is set by canEvaluatePolicy whatever it returns.
+static ERL_NIF_TERM nif_biometric_availability(ErlNifEnv *env, int argc,
+                                               const ERL_NIF_TERM argv[]) {
+    LAContext *ctx = [[LAContext alloc] init];
+    NSError *err = nil;
+    if ([ctx canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics error:&err])
+        return enif_make_atom(env, "available");
+    switch (err.code) {
+      case LAErrorBiometryNotEnrolled:
+        return enif_make_atom(env, "not_enrolled");
+      case LAErrorBiometryNotAvailable:
+        return enif_make_atom(env, ctx.biometryType == LABiometryTypeNone ? "no_hardware"
+                                                                          : "unavailable");
+      case LAErrorBiometryLockout:
+        return enif_make_atom(env, "locked_out");
+      case LAErrorPasscodeNotSet:
+        return enif_make_atom(env, "passcode_not_set");
+      default:
+        return enif_make_atom(env, "unavailable");
+    }
+}
+
 // ── Registration ──────────────────────────────────────────────────────────
 static ErlNifFunc nif_funcs[] = {
     {"biometric_authenticate", 1, nif_biometric_authenticate, 0},
+    {"biometric_availability", 0, nif_biometric_availability, 0},
 };
 
 ERL_NIF_INIT(mob_biometric_nif, nif_funcs, NULL, NULL, NULL, NULL)
