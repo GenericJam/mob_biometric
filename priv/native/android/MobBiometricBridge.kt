@@ -6,9 +6,10 @@
 // mob's MainActivity is a ComponentActivity (Compose host), so the androidx path
 // always failed its `as? FragmentActivity` cast and delivered :not_available
 // regardless of enrollment. minSdk is 28, so the platform API covers the whole
-// supported range — no FingerprintManager fallback needed. This mirrors how the
-// camera bridge adapts to the ComponentActivity host instead of forcing a
-// FragmentActivity.
+// supported range for the prompt. (The read-only biometric_availability() query
+// falls back to FingerprintManager on API 28, which has no BiometricManager.)
+// This mirrors how the camera bridge adapts to the ComponentActivity host
+// instead of forcing a FragmentActivity.
 //
 // The native thunks (nativeRegister + nativeDeliverBiometric) are exported
 // directly from the sibling zig NIF mob_biometric_nif.zig. MobPluginBootstrap
@@ -28,14 +29,21 @@ import java.lang.ref.WeakReference
 import java.util.concurrent.atomic.AtomicBoolean
 
 object MobBiometricBridge : io.mob.plugin.MobActivityAware {
-    // biometric_availability() codes; the zig NIF turns them into atoms.
-    private const val AVAIL_AVAILABLE = 0
-    private const val AVAIL_NOT_ENROLLED = 1
-    private const val AVAIL_NO_HARDWARE = 2
-    private const val AVAIL_UNAVAILABLE = 3
-    private const val AVAIL_NO_ACTIVITY = 4
+    // biometric_availability() codes; the zig NIF turns each into the atom its
+    // name spells (AVAIL_NOT_ENROLLED -> :not_enrolled; the last three into
+    // {:error, atom}). 0 is deliberately unused: it is what ART returns from
+    // CallStaticIntMethod when the method throws, so an exception that escaped
+    // can never read as "available".
+    private const val AVAIL_AVAILABLE = 1
+    private const val AVAIL_NOT_ENROLLED = 2
+    private const val AVAIL_NO_HARDWARE = 3
+    private const val AVAIL_UNAVAILABLE = 4
+    private const val AVAIL_NO_ACTIVITY = 5
+    private const val AVAIL_MISSING_PERMISSION = 6
+    private const val AVAIL_JAVA_EXCEPTION = 7
 
-    private var activityRef: WeakReference<Activity>? = null
+    // Written on the main thread (setActivity), read on BEAM scheduler threads.
+    @Volatile private var activityRef: WeakReference<Activity>? = null
 
     @JvmStatic external fun nativeRegister()
 
@@ -51,9 +59,11 @@ object MobBiometricBridge : io.mob.plugin.MobActivityAware {
         activityRef = WeakReference(activity)
     }
 
-    // Read-only capability check; never shows UI. 0 available, 1 none enrolled,
-    // 2 no hardware, 3 hardware unavailable (or security update required),
-    // 4 no Activity (the bootstrap never called setActivity).
+    // Read-only capability check; never shows UI. Codes above; NO_ACTIVITY means
+    // the bootstrap never called setActivity, MISSING_PERMISSION that the host
+    // manifest lacks USE_BIOMETRIC / USE_FINGERPRINT (normally merged from the
+    // androidx.biometric AAR). On API 28 only fingerprint is visible, so an OEM
+    // face/iris-only device reports not enrolled / no hardware there.
     @JvmStatic
     fun biometric_availability(): Int {
         val activity = activityRef?.get() ?: return AVAIL_NO_ACTIVITY
@@ -61,21 +71,25 @@ object MobBiometricBridge : io.mob.plugin.MobActivityAware {
             when {
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
                     val bm = activity.getSystemService(BiometricManager::class.java)
-                        ?: return AVAIL_NO_HARDWARE
+                        ?: return AVAIL_UNAVAILABLE
                     // BIOMETRIC_WEAK (which includes STRONG) is what the
                     // platform BiometricPrompt built below accepts by default.
                     fromCanAuthenticate(bm.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK))
                 }
                 Build.VERSION.SDK_INT == Build.VERSION_CODES.Q -> {
                     val bm = activity.getSystemService(BiometricManager::class.java)
-                        ?: return AVAIL_NO_HARDWARE
+                        ?: return AVAIL_UNAVAILABLE
                     @Suppress("DEPRECATION")
                     fromCanAuthenticate(bm.canAuthenticate())
                 }
                 else -> fingerprintAvailability(activity)
             }
         } catch (e: SecurityException) {
-            AVAIL_UNAVAILABLE
+            android.util.Log.w("MobBiometric", "biometric_availability: missing permission", e)
+            AVAIL_MISSING_PERMISSION
+        } catch (t: Throwable) {
+            android.util.Log.w("MobBiometric", "biometric_availability threw", t)
+            AVAIL_JAVA_EXCEPTION
         }
     }
 
@@ -93,7 +107,7 @@ object MobBiometricBridge : io.mob.plugin.MobActivityAware {
         if (!activity.packageManager.hasSystemFeature(PackageManager.FEATURE_FINGERPRINT)) {
             return AVAIL_NO_HARDWARE
         }
-        val fm = activity.getSystemService(FingerprintManager::class.java) ?: return AVAIL_NO_HARDWARE
+        val fm = activity.getSystemService(FingerprintManager::class.java) ?: return AVAIL_UNAVAILABLE
         return when {
             !fm.isHardwareDetected -> AVAIL_UNAVAILABLE
             !fm.hasEnrolledFingerprints() -> AVAIL_NOT_ENROLLED

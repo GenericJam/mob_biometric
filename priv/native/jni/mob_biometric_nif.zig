@@ -74,15 +74,40 @@ fn bridgeNotRegistered(env: ?*erts.ErlNifEnv) erts.ERL_NIF_TERM {
     return erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, "bridge_not_registered") });
 }
 
+fn errorTuple(env: ?*erts.ErlNifEnv, comptime reason: [:0]const u8) erts.ERL_NIF_TERM {
+    return erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, reason) });
+}
+
+/// Deliver {:biometric, :not_available} to the caller when the request never
+/// reached the bridge, so authenticate/2's caller still gets its one answer
+/// (the iOS NIF and the Kotlin no-Activity path do the same).
+fn sendNotAvailable(pid: erts.ErlNifPid) void {
+    var to = pid;
+    const msg_env = erts.enif_alloc_env() orelse return;
+    defer erts.enif_free_env(msg_env);
+    const msg = erts.makeTuple(msg_env, .{ erts.atom(msg_env, "biometric"), erts.atom(msg_env, "not_available") });
+    _ = erts.enif_send(null, &to, msg_env, msg);
+}
+
 /// Call `MobBiometricBridge.<method>(pid_long, arg)` — async; the result lands
-/// later via the nativeDeliverBiometric thunk. Returns :ok once dispatched, or
-/// {:error, :bridge_not_registered} (the public API ignores the return value).
+/// later via the nativeDeliverBiometric thunk. Returns :ok once dispatched.
+/// When it can't dispatch it sends {:biometric, :not_available} to the caller
+/// and returns {:error, :bridge_not_registered | :no_jni_env} (the public API
+/// ignores the return value).
 fn callBridgePidStr(env: ?*erts.ErlNifEnv, method: jni.JMethodID, pid: erts.ErlNifPid, arg: ?[*:0]const u8) erts.ERL_NIF_TERM {
-    if (g_bio_cls == null or method == null) return bridgeNotRegistered(env);
+    if (g_bio_cls == null or method == null) {
+        sendNotAvailable(pid);
+        return bridgeNotRegistered(env);
+    }
     var attached: c_int = 0;
-    const jenv = get_jenv(&attached) orelse return erts.atom(env, "error");
+    const jenv = get_jenv(&attached) orelse {
+        sendNotAvailable(pid);
+        return errorTuple(env, "no_jni_env");
+    };
     const jarg: jni.JString = if (arg) |a| jni.newStringUTF(jenv, a) else null;
     jenv.*.CallStaticVoidMethod.?(jenv, g_bio_cls, method, pidToJlong(pid), jarg);
+    // Never leave a Java exception pending on this thread (a no-op if none).
+    jni.exceptionClear(jenv);
     if (jarg != null) jni.deleteLocalRef(jenv, jarg);
     detachIfAttached(attached);
     return erts.ok(env);
@@ -138,10 +163,15 @@ fn nif_biometric_authenticate(
 }
 
 // biometric_availability/0 — read-only, no UI. Maps the Kotlin bridge's code
-// (MobBiometricBridge.biometric_availability) to an atom:
-//   0 -> available, 1 -> not_enrolled, 2 -> no_hardware, 3 -> unavailable,
-//   4 -> {:error, :no_activity}; bridge never registered ->
-//   {:error, :bridge_not_registered}; no JNI env -> {:error, :no_jni_env}.
+// (MobBiometricBridge.biometric_availability, AVAIL_* constants) to an atom:
+//   1 -> available, 2 -> not_enrolled, 3 -> no_hardware, 4 -> unavailable,
+//   5 -> {:error, :no_activity}, 6 -> {:error, :missing_permission},
+//   7 -> {:error, :java_exception} (Kotlin caught it).
+// 0 is never returned by the bridge: it is what ART yields when the method
+// throws past the bridge's catch, so it maps to {:error, :java_exception}, never
+// to :available. Bridge never registered (or either method-ID lookup failed) ->
+// {:error, :bridge_not_registered}; no JNI env -> {:error, :no_jni_env}.
+// Dirty IO: canAuthenticate is a binder call into system_server.
 fn nif_biometric_availability(
     env: ?*erts.ErlNifEnv,
     argc: c_int,
@@ -149,19 +179,23 @@ fn nif_biometric_availability(
 ) callconv(.c) erts.ERL_NIF_TERM {
     _ = argc;
     _ = argv;
-    if (g_bio_cls == null or g_bio.availability == null) return bridgeNotRegistered(env);
+    // Require the authenticate lookup too: a pass must mean authenticate/2's
+    // bridge state is wired, not just this query's.
+    if (g_bio_cls == null or g_bio.availability == null or g_bio.authenticate == null)
+        return bridgeNotRegistered(env);
     var attached: c_int = 0;
-    const jenv = get_jenv(&attached) orelse
-        return erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, "no_jni_env") });
+    const jenv = get_jenv(&attached) orelse return errorTuple(env, "no_jni_env");
     const code = jenv.*.CallStaticIntMethod.?(jenv, g_bio_cls, g_bio.availability);
     jni.exceptionClear(jenv);
     detachIfAttached(attached);
     return switch (code) {
-        0 => erts.atom(env, "available"),
-        1 => erts.atom(env, "not_enrolled"),
-        2 => erts.atom(env, "no_hardware"),
-        3 => erts.atom(env, "unavailable"),
-        4 => erts.makeTuple(env, .{ erts.atom(env, "error"), erts.atom(env, "no_activity") }),
+        1 => erts.atom(env, "available"),
+        2 => erts.atom(env, "not_enrolled"),
+        3 => erts.atom(env, "no_hardware"),
+        4 => erts.atom(env, "unavailable"),
+        5 => errorTuple(env, "no_activity"),
+        6 => errorTuple(env, "missing_permission"),
+        0, 7 => errorTuple(env, "java_exception"),
         else => erts.makeTuple(env, .{ erts.atom(env, "error"), erts.enif_make_int(env, code) }),
     };
 }
@@ -176,7 +210,7 @@ fn nifLoad(env: ?*erts.ErlNifEnv, priv: *?*anyopaque, info: erts.ERL_NIF_TERM) c
 
 const nif_funcs = [_]erts.ErlNifFunc{
     .{ .name = "biometric_authenticate", .arity = 1, .fptr = nif_biometric_authenticate, .flags = 0 },
-    .{ .name = "biometric_availability", .arity = 0, .fptr = nif_biometric_availability, .flags = 0 },
+    .{ .name = "biometric_availability", .arity = 0, .fptr = nif_biometric_availability, .flags = erts.ERL_NIF_DIRTY_JOB_IO_BOUND },
 };
 
 var nif_entry: erts.ErlNifEntry = .{

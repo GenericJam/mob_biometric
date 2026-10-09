@@ -62,17 +62,28 @@ defmodule MobBiometric do
     * `:locked_out` — iOS only: too many failed attempts.
     * `:passcode_not_set` — iOS only: biometrics need a device passcode.
 
-  Android may also return `{:error, :bridge_not_registered}` or
-  `{:error, :no_activity}` when the host's plugin bootstrap never registered
-  the Kotlin bridge or never handed it an Activity — host integration bugs.
+  `{:error, reason}` means the host build is wired wrong, not a device state:
+
+    * Android: `:bridge_not_registered` (the plugin bootstrap never registered
+      the Kotlin bridge, or a method lookup failed), `:no_activity` (it never
+      handed the bridge an Activity), `:missing_permission` (no
+      `USE_BIOMETRIC` / `USE_FINGERPRINT` in the merged manifest),
+      `:java_exception` (the bridge threw; logged under tag `MobBiometric`),
+      `:no_jni_env`.
+    * iOS: `:missing_face_id_usage_description` (a Face ID device whose
+      Info.plist lacks the key this plugin's manifest merges) and
+      `{:la_error, code}` for an `LAError` code not listed above.
 
   iOS: `LAContext.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics)`.
   Android: `BiometricManager.canAuthenticate(BIOMETRIC_WEAK)` (API 30+),
-  `canAuthenticate()` (API 29), `FingerprintManager` (API 28).
+  `canAuthenticate()` (API 29), `FingerprintManager` (API 28 — fingerprint
+  only, so a face/iris-only device reads `:not_enrolled` / `:no_hardware`).
+  Runs on a dirty IO scheduler.
 
   On a host build with no native library linked this raises `ErlangError`
   (`nif_not_loaded`).
   """
-  @spec availability() :: availability() | {:error, atom() | integer()}
+  @spec availability() ::
+          availability() | {:error, atom() | {:la_error, integer()} | integer()}
   def availability, do: :mob_biometric_nif.biometric_availability()
 end

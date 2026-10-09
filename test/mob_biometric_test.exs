@@ -114,13 +114,42 @@ defmodule MobBiometricTest do
                result = SelfTest.classify({:error, :no_activity})
 
       assert Mob.Plugin.SelfTest.result?(result)
+
+      for {reason, words} <- [
+            missing_permission: "USE_BIOMETRIC",
+            java_exception: "threw",
+            missing_face_id_usage_description: "NSFaceIDUsageDescription"
+          ] do
+        assert {:fail, msg} = result = SelfTest.classify({:error, reason})
+        assert msg =~ words
+        assert Mob.Plugin.SelfTest.result?(result)
+      end
     end
 
     test "an unexpected answer fails, quoting it" do
-      for answer <- [:ok, {:error, 7}, true] do
+      for answer <- [:ok, {:error, 9}, {:error, {:la_error, -1004}}, true] do
         assert {:fail, reason} = result = SelfTest.classify(answer)
         assert reason =~ "biometric_availability/0 returned #{inspect(answer)}"
         assert Mob.Plugin.SelfTest.result?(result)
+      end
+    end
+
+    test "every answer the Android NIF can build is classified: bare atoms never fail, errors always do" do
+      zig_src = File.read!(Path.join(@plugin_dir, "priv/native/jni/mob_biometric_nif.zig"))
+
+      answers =
+        for [_, kind, name] <-
+              Regex.scan(~r/\d(?:, \d)* => (erts\.atom|errorTuple)\(env, "(\w+)"\)/, zig_src) do
+          if kind == "errorTuple", do: {:error, String.to_atom(name)}, else: String.to_atom(name)
+        end
+
+      assert :available in answers and {:error, :java_exception} in answers
+
+      for answer <- answers do
+        result = SelfTest.classify(answer)
+        assert Mob.Plugin.SelfTest.result?(result)
+        failed? = match?({:fail, _}, result)
+        assert failed? == match?({:error, _}, answer), "#{inspect(answer)} -> #{inspect(result)}"
       end
     end
   end
@@ -156,11 +185,42 @@ defmodule MobBiometricTest do
       zig_src = File.read!(Path.join(@plugin_dir, "priv/native/jni/mob_biometric_nif.zig"))
       kt_src = File.read!(Path.join(@plugin_dir, "priv/native/android/MobBiometricBridge.kt"))
 
-      assert m_src =~ ~s({"biometric_availability", 0, nif_biometric_availability, 0})
+      assert m_src =~
+               ~s({"biometric_availability", 0, nif_biometric_availability, ERL_NIF_DIRTY_JOB_IO_BOUND})
+
       assert zig_src =~ ~s(.name = "biometric_availability", .arity = 0)
-      # The zig lookup's "()I" signature must match the Kotlin method.
+      # The zig lookup's "()I" signature must match a static Kotlin method
+      # returning a primitive Int (Int? would be Ljava/lang/Integer;).
       assert zig_src =~ ~s|"biometric_availability", "()I"|
-      assert kt_src =~ "fun biometric_availability(): Int"
+      assert kt_src =~ ~r/@JvmStatic\s+fun biometric_availability\(\): Int \{/
+    end
+
+    # credo:disable-for-next-line Jump.CredoChecks.VacuousTest
+    test "the Kotlin AVAIL_* codes and the zig switch agree, and 0 never means available" do
+      zig_src = File.read!(Path.join(@plugin_dir, "priv/native/jni/mob_biometric_nif.zig"))
+      kt_src = File.read!(Path.join(@plugin_dir, "priv/native/android/MobBiometricBridge.kt"))
+
+      kt_codes =
+        for [_, name, n] <- Regex.scan(~r/const val AVAIL_(\w+) = (\d+)/, kt_src),
+            into: %{},
+            do: {String.downcase(name), String.to_integer(n)}
+
+      assert map_size(kt_codes) == 7
+      refute 0 in Map.values(kt_codes)
+
+      zig_arms =
+        for [_, ns, name] <-
+              Regex.scan(~r/(\d(?:, \d)*) => \w+(?:\.atom)?\(env, "(\w+)"\)/, zig_src),
+            n <- String.split(ns, ", "),
+            into: %{},
+            do: {String.to_integer(n), name}
+
+      for {name, n} <- kt_codes do
+        assert zig_arms[n] == name,
+               "AVAIL_#{String.upcase(name)} = #{n}, zig maps it to #{inspect(zig_arms[n])}"
+      end
+
+      assert zig_arms[0] == "java_exception"
     end
   end
 

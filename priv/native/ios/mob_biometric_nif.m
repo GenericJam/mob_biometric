@@ -76,40 +76,78 @@ static ERL_NIF_TERM nif_biometric_authenticate(ErlNifEnv *env, int argc,
 
 // ── Biometric availability (read-only, no UI) ─────────────────────────────
 // canEvaluatePolicy never prompts (the Face ID usage prompt only appears on
-// evaluatePolicy). Returns an atom:
+// evaluatePolicy). Returns:
 //   available         — canEvaluatePolicy succeeded
 //   not_enrolled      — LAErrorBiometryNotEnrolled
 //   no_hardware       — LAErrorBiometryNotAvailable and biometryType is None
 //   unavailable       — LAErrorBiometryNotAvailable with a sensor (e.g. the
-//                       user denied this app Face ID), or any other error
+//                       user denied this app Face ID)
 //   locked_out        — LAErrorBiometryLockout
 //   passcode_not_set  — LAErrorPasscodeNotSet
-// biometryType is set by canEvaluatePolicy whatever it returns.
+//   {error, missing_face_id_usage_description}
+//                     — a Face ID device and the host Info.plist lacks
+//                       NSFaceIDUsageDescription (the manifest merges it, so
+//                       this is a host build bug)
+//   {error, {la_error, Code}} — any other LAError / domain: unexpected
+// biometryType is set by canEvaluatePolicy whatever it returns. Runs on a
+// dirty IO scheduler (canEvaluatePolicy is a synchronous XPC call) inside an
+// autorelease pool (scheduler threads never drain the implicit one).
+typedef enum {
+  BIO_AVAILABLE, BIO_NOT_ENROLLED, BIO_NO_HARDWARE, BIO_UNAVAILABLE,
+  BIO_LOCKED_OUT, BIO_PASSCODE_NOT_SET, BIO_MISSING_PLIST_KEY, BIO_LA_ERROR
+} bio_availability;
+
 static ERL_NIF_TERM nif_biometric_availability(ErlNifEnv *env, int argc,
                                                const ERL_NIF_TERM argv[]) {
-    LAContext *ctx = [[LAContext alloc] init];
-    NSError *err = nil;
-    if ([ctx canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics error:&err])
-        return enif_make_atom(env, "available");
-    switch (err.code) {
-      case LAErrorBiometryNotEnrolled:
-        return enif_make_atom(env, "not_enrolled");
-      case LAErrorBiometryNotAvailable:
-        return enif_make_atom(env, ctx.biometryType == LABiometryTypeNone ? "no_hardware"
-                                                                          : "unavailable");
-      case LAErrorBiometryLockout:
-        return enif_make_atom(env, "locked_out");
-      case LAErrorPasscodeNotSet:
-        return enif_make_atom(env, "passcode_not_set");
+    bio_availability answer;
+    NSInteger code = 0;
+    @autoreleasepool {
+      LAContext *ctx = [[LAContext alloc] init];
+      NSError *err = nil;
+      BOOL ok = [ctx canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics
+                                 error:&err];
+      code = err.code;
+      if (ctx.biometryType == LABiometryTypeFaceID &&
+          [[NSBundle mainBundle] objectForInfoDictionaryKey:@"NSFaceIDUsageDescription"] == nil) {
+        answer = BIO_MISSING_PLIST_KEY;
+      } else if (ok) {
+        answer = BIO_AVAILABLE;
+      } else if (![err.domain isEqualToString:LAErrorDomain]) {
+        answer = BIO_LA_ERROR;
+      } else {
+        switch (code) {
+          case LAErrorBiometryNotEnrolled: answer = BIO_NOT_ENROLLED; break;
+          case LAErrorBiometryNotAvailable:
+            answer = ctx.biometryType == LABiometryTypeNone ? BIO_NO_HARDWARE : BIO_UNAVAILABLE;
+            break;
+          case LAErrorBiometryLockout: answer = BIO_LOCKED_OUT; break;
+          case LAErrorPasscodeNotSet: answer = BIO_PASSCODE_NOT_SET; break;
+          default: answer = BIO_LA_ERROR; break;
+        }
+      }
+    }
+    switch (answer) {
+      case BIO_AVAILABLE: return enif_make_atom(env, "available");
+      case BIO_NOT_ENROLLED: return enif_make_atom(env, "not_enrolled");
+      case BIO_NO_HARDWARE: return enif_make_atom(env, "no_hardware");
+      case BIO_UNAVAILABLE: return enif_make_atom(env, "unavailable");
+      case BIO_LOCKED_OUT: return enif_make_atom(env, "locked_out");
+      case BIO_PASSCODE_NOT_SET: return enif_make_atom(env, "passcode_not_set");
+      case BIO_MISSING_PLIST_KEY:
+        return enif_make_tuple2(env, enif_make_atom(env, "error"),
+                                enif_make_atom(env, "missing_face_id_usage_description"));
+      case BIO_LA_ERROR:
       default:
-        return enif_make_atom(env, "unavailable");
+        return enif_make_tuple2(
+            env, enif_make_atom(env, "error"),
+            enif_make_tuple2(env, enif_make_atom(env, "la_error"), enif_make_long(env, (long)code)));
     }
 }
 
 // ── Registration ──────────────────────────────────────────────────────────
 static ErlNifFunc nif_funcs[] = {
     {"biometric_authenticate", 1, nif_biometric_authenticate, 0},
-    {"biometric_availability", 0, nif_biometric_availability, 0},
+    {"biometric_availability", 0, nif_biometric_availability, ERL_NIF_DIRTY_JOB_IO_BOUND},
 };
 
 ERL_NIF_INIT(mob_biometric_nif, nif_funcs, NULL, NULL, NULL, NULL)

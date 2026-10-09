@@ -16,24 +16,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `LAContext.canEvaluatePolicy` (+ `biometryType`), Android
   `MobBiometricBridge.biometric_availability()` →
   `BiometricManager.canAuthenticate(BIOMETRIC_WEAK)` (API 30+),
-  `canAuthenticate()` (API 29), `FingerprintManager` (API 28). Android also
-  answers `{:error, :bridge_not_registered}` / `{:error, :no_activity}` when
-  the host bootstrap never registered the bridge / handed it an Activity.
+  `canAuthenticate()` (API 29), `FingerprintManager` (API 28); runs on a
+  dirty IO scheduler. A miswired host answers `{:error, reason}` instead:
+  Android `:bridge_not_registered`, `:no_activity`, `:missing_permission`,
+  `:java_exception`; iOS `:missing_face_id_usage_description` (Face ID
+  device, key absent from Info.plist) or `{:la_error, code}` for an
+  unexpected `LAError`. A Java exception can never read as `:available`.
 - **On-device self-test** (MOB-418). `MobBiometric.SelfTest` implements
   `Mob.Plugin.SelfTest` and is declared in the manifest as `selftest:`. It
   calls `biometric_availability/0` (never `authenticate`, which needs a
   finger or a face): `:available` passes, `:no_hardware` is
   `{:skip, :needs_hardware}`, other device states (not enrolled, lockout,
-  …) skip with a reason, an unregistered bridge / missing Activity / unlinked
-  NIF fails. Run it with `mix mob.selftest` from a host app (mob_dev
-  0.7.17). Requires mob 0.9.15; `mob_version` in the manifest is now `~> 0.9`.
+  …) skip with a reason, every `{:error, _}` and an unlinked NIF fail. Run
+  it with `mix mob.selftest` from a host app (mob_dev 0.7.17). Requires mob
+  0.9.15; `mob_version` in the manifest is now `~> 0.9`.
 
 ### Fixed
-- **Android: `biometric_authenticate/1` no longer calls into a null bridge
-  class** when `MobBiometricBridge.register()` never ran; it returns
-  `{:error, :bridge_not_registered}` (ignored by `authenticate/2`), and a
-  failed method-ID lookup in `nativeRegister` no longer leaves a pending
-  `NoSuchMethodError` behind.
+- **Android: `authenticate/2` with an unregistered bridge** no longer calls
+  into a null bridge class; the caller now receives
+  `{:biometric, :not_available}` (as on iOS and the no-Activity path) instead
+  of nothing. A failed method-ID lookup in `nativeRegister` no longer leaves a
+  pending `NoSuchMethodError`, and a Java exception from the bridge call is
+  cleared instead of left pending on the scheduler thread.
 
 ---
 

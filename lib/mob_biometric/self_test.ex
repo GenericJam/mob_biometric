@@ -22,10 +22,15 @@ defmodule MobBiometric.SelfTest do
       are skips with a reason: the sensor exists but the device's state (no
       enrolment, hardware busy, lockout, no passcode) keeps it unusable, and
       fixing that is the device owner's job.
-    * `{:error, :bridge_not_registered}` (Android: `MobBiometricBridge.register()`
-      never ran or a method-ID lookup failed), `{:error, :no_activity}` (the
-      bootstrap never handed the bridge an Activity) and any other answer
-      are failures.
+    * Host-integration bugs are failures: `{:error, :bridge_not_registered}`
+      (Android: `MobBiometricBridge.register()` never ran, or the
+      `biometric_availability` or `biometric_authenticate` method-ID lookup
+      failed), `{:error, :no_activity}` (the bootstrap never handed the bridge
+      an Activity), `{:error, :missing_permission}` (the host manifest lacks
+      `USE_BIOMETRIC` / `USE_FINGERPRINT`), `{:error, :java_exception}` (the
+      bridge threw), `{:error, :missing_face_id_usage_description}` (iOS: a
+      Face ID device whose Info.plist lacks the key the manifest merges), and
+      any other answer, e.g. an unexpected `{:error, {:la_error, code}}`.
     * The host stub's `nif_not_loaded` is a failure: the NIF is not linked.
   """
   @behaviour Mob.Plugin.SelfTest
@@ -35,7 +40,13 @@ defmodule MobBiometric.SelfTest do
     classify(:mob_biometric_nif.biometric_availability())
   rescue
     e in ErlangError ->
-      {:fail, "mob_biometric_nif is not linked into this build: #{Exception.message(e)}"}
+      case e.original do
+        :nif_not_loaded ->
+          {:fail, "mob_biometric_nif is not linked into this build: #{Exception.message(e)}"}
+
+        _ ->
+          {:fail, "biometric_availability/0 raised: #{Exception.message(e)}"}
+      end
   end
 
   @doc false
@@ -63,6 +74,17 @@ defmodule MobBiometric.SelfTest do
 
   def classify({:error, :no_activity}),
     do: {:fail, "MobBiometricBridge has no Activity (MobActivityAware.setActivity never called)"}
+
+  def classify({:error, :missing_permission}),
+    do:
+      {:fail,
+       "host manifest lacks USE_BIOMETRIC / USE_FINGERPRINT (the androidx.biometric merge is missing)"}
+
+  def classify({:error, :java_exception}),
+    do: {:fail, "MobBiometricBridge.biometric_availability() threw (see logcat tag MobBiometric)"}
+
+  def classify({:error, :missing_face_id_usage_description}),
+    do: {:fail, "Info.plist lacks NSFaceIDUsageDescription on a Face ID device"}
 
   def classify(other),
     do:
